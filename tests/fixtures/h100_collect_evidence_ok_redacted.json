@@ -1,0 +1,12 @@
+{
+  "evidences": [
+    {
+      "arch": "HOPPER",
+      "certificate": "REDACTED_BASE64_CERTIFICATE",
+      "evidence": "REDACTED_BASE64_EVIDENCE",
+      "nonce": "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff"
+    }
+  ],
+  "result_code": 0,
+  "result_message": "Ok"
+}

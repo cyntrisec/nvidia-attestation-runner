@@ -14,11 +14,13 @@ It is not an NVIDIA project and does not currently implement a native NVIDIA ver
 ```rust
 use nvidia_attestation_runner::{NvAttestRunner, Policy};
 
-let report = NvAttestRunner::local_gpu_with_nonce_hex("00112233445566778899aabbccddeeff")
+let report = NvAttestRunner::local_gpu_with_nonce_hex(
+    "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+)
     .run()?;
 
 let verdict = Policy::nvidia_cc_baseline()
-    .expected_nonce_hex("00112233445566778899aabbccddeeff")?
+    .expected_nonce_hex("00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff")?
     .evaluate(&report);
 
 assert!(verdict.accepted, "{:?}", verdict.failures);
@@ -32,8 +34,15 @@ println!("raw GPU evidence hash: {}", hashes["raw_json"]);
 
 - The crate keeps NVIDIA verifier JSON intact and exposes tolerant accessors for common claim shapes.
 - The policy layer is fail-closed: required claims must be present and successful.
+- `nvattest` can exit non-zero while still emitting JSON failure details; the runner returns that parsed JSON so callers can make an explicit policy decision.
 - Hashes are for evidence binding. They do not by themselves prove that GPU evidence was appraised correctly.
 - AIR v1/v2 integrations should bind this crate's GPU evidence hash into a separate canonical platform-evidence bundle unless and until the AIR receipt schema directly supports composite CPU/GPU evidence.
+
+## Hardware validation
+
+The crate has been exercised against NVIDIA `nvattest 1.2.0` on a Google Cloud `a3-highgpu-1g` Confidential VM with an H100 GPU in CC mode. Evidence collection succeeded, but local attestation returned `result_code = 12`, `measres = "fail"`, and one firmware measurement mismatch. That real output is included as a redacted fixture so the default policy rejects it fail-closed.
+
+Do not treat this crate as release-ready for production GPU trust decisions until a green NVIDIA local attestation run is captured and added as a passing fixture.
 
 ## Status
 

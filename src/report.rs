@@ -9,8 +9,9 @@ use crate::{sha256_hex, Result};
 ///
 /// The verifier JSON has changed across NVIDIA tooling versions. This type keeps
 /// the raw JSON intact and exposes tolerant accessors for common claim shapes:
-/// direct object fields, `claims` maps, and `claims` arrays with name/value or
-/// name/result pairs.
+/// direct object fields, `claims` maps, `claims` arrays with name/value or
+/// name/result pairs, and NVAT 1.2.0-style `claims` arrays containing one
+/// object with direct claim-name keys.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttestationReport {
     raw: Value,
@@ -66,6 +67,10 @@ impl AttestationReport {
             Some(Value::Object(object)) => names.extend(object.keys().cloned()),
             Some(Value::Array(items)) => {
                 for item in items {
+                    if let Some(object) = item.as_object() {
+                        names.extend(object.keys().cloned());
+                    }
+
                     if let Some(name) = claim_name(item) {
                         names.push(name.to_owned());
                     }
@@ -96,6 +101,20 @@ impl AttestationReport {
                 .unwrap_or(false)
             || self.raw.get("detached_eat").is_some()
             || self.raw.get("gpus").is_some()
+    }
+
+    /// Return the NVIDIA SDK top-level result code when present.
+    pub fn result_code(&self) -> Option<i64> {
+        match self.raw.get("result_code")? {
+            Value::Number(number) => number.as_i64(),
+            Value::String(value) => value.trim().parse().ok(),
+            _ => None,
+        }
+    }
+
+    /// Return the NVIDIA SDK top-level result message when present.
+    pub fn result_message(&self) -> Option<&str> {
+        self.raw.get("result_message").and_then(Value::as_str)
     }
 
     /// Extract an EAT nonce from common fields when present.
@@ -135,6 +154,10 @@ fn claim_from_object<'a>(value: &'a Value, name: &str) -> Option<&'a Value> {
 
 fn claim_from_array<'a>(claims: &'a [Value], name: &str) -> Option<&'a Value> {
     for claim in claims {
+        if let Some(value) = direct_field(claim, name) {
+            return Some(value);
+        }
+
         if claim_name(claim) == Some(name) {
             return claim
                 .get("value")

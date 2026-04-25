@@ -36,6 +36,7 @@ impl PolicyVerdict {
 #[derive(Debug, Clone, Default)]
 pub struct Policy {
     expected_nonce: Option<Vec<u8>>,
+    require_attestation_success: bool,
     require_gpu_evidence: bool,
     require_report_parsed: bool,
     require_report_signature_verified: bool,
@@ -49,6 +50,7 @@ impl Policy {
     /// Conservative baseline for confidential GPU evidence produced by NVIDIA tooling.
     pub fn nvidia_cc_baseline() -> Self {
         Self {
+            require_attestation_success: true,
             require_gpu_evidence: true,
             require_report_parsed: true,
             require_report_signature_verified: true,
@@ -62,6 +64,11 @@ impl Policy {
 
     pub fn expected_nonce(mut self, nonce: impl Into<Vec<u8>>) -> Self {
         self.expected_nonce = Some(nonce.into());
+        self
+    }
+
+    pub fn require_attestation_success(mut self, required: bool) -> Self {
+        self.require_attestation_success = required;
         self
     }
 
@@ -109,6 +116,10 @@ impl Policy {
 
     pub fn evaluate(&self, report: &AttestationReport) -> PolicyVerdict {
         let mut verdict = PolicyVerdict::accepted();
+
+        if self.require_attestation_success {
+            require_attestation_success(&mut verdict, report);
+        }
 
         if self.require_gpu_evidence && !report.has_gpu_evidence() {
             verdict.fail("gpu_evidence_missing", "no NVIDIA GPU evidence was found");
@@ -173,8 +184,16 @@ impl Policy {
                     "rim_signature_verified",
                 ],
                 true,
-                "rim_signature_unverified",
-                "RIM signature was not verified",
+                "driver_rim_signature_unverified",
+                "driver RIM signature was not verified",
+            );
+            require_bool(
+                &mut verdict,
+                report,
+                &["x-nvidia-gpu-vbios-rim-signature-verified"],
+                true,
+                "vbios_rim_signature_unverified",
+                "VBIOS RIM signature was not verified",
             );
         }
 
@@ -184,6 +203,53 @@ impl Policy {
 
         verdict
     }
+}
+
+fn require_attestation_success(verdict: &mut PolicyVerdict, report: &AttestationReport) {
+    if let Some(code) = report.result_code() {
+        if code == 0 {
+            return;
+        }
+
+        verdict.fail(
+            "nvidia_attestation_failed",
+            format!("NVIDIA verifier returned result_code {code}"),
+        );
+        return;
+    }
+
+    if let Some(success) = report.claim_bool(&[
+        "x-nvidia-overall-att-result",
+        "overall_attestation_result",
+        "attestation_result",
+    ]) {
+        if success {
+            return;
+        }
+
+        verdict.fail(
+            "nvidia_attestation_failed",
+            "NVIDIA verifier reported an unsuccessful attestation result",
+        );
+        return;
+    }
+
+    if let Some(message) = report.result_message() {
+        if message.eq_ignore_ascii_case("ok") {
+            return;
+        }
+
+        verdict.fail(
+            "nvidia_attestation_failed",
+            format!("NVIDIA verifier returned result_message {message:?}"),
+        );
+        return;
+    }
+
+    verdict.fail(
+        "nvidia_attestation_result_missing",
+        "NVIDIA verifier result_code/result_message was not present",
+    );
 }
 
 fn require_bool(
@@ -201,6 +267,18 @@ fn require_bool(
 }
 
 fn require_measurements_success(verdict: &mut PolicyVerdict, report: &AttestationReport) {
+    if report
+        .claim("x-nvidia-mismatch-measurement-records")
+        .and_then(serde_json::Value::as_array)
+        .map(|records| !records.is_empty())
+        .unwrap_or(false)
+    {
+        verdict.fail(
+            "measurement_mismatch_records_present",
+            "NVIDIA reported one or more runtime measurement mismatches",
+        );
+    }
+
     for name in ["x-nvidia-gpu-measres", "measres", "measurement_result"] {
         if let Some(value) = report.claim(name) {
             let ok = value_as_bool(value).unwrap_or_else(|| {

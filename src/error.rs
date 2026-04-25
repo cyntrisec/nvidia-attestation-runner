@@ -13,5 +13,9 @@ pub enum Error {
     Json(#[from] serde_json::Error),
 
     #[error("NVIDIA attestation command failed with status {status}: {stderr}")]
-    CommandFailed { status: ExitStatus, stderr: String },
+    CommandFailed {
+        status: ExitStatus,
+        stderr: String,
+        stdout: String,
+    },
 }

@@ -1,0 +1,40 @@
+# nvidia-attestation-runner
+
+Unofficial Rust runner and policy layer for NVIDIA GPU attestation evidence.
+
+This crate is designed for two use cases:
+
+- Applications that want to invoke NVIDIA attestation tooling from Rust and apply explicit verifier policy.
+- Systems such as AIR/platform evidence bundles that need a stable hash of GPU attestation output to bind CPU, GPU, and application evidence together.
+
+It is not an NVIDIA project and does not currently implement a native NVIDIA verifier. The first version deliberately wraps NVIDIA tooling output instead of reimplementing certificate, RIM, or token validation logic.
+
+## Example
+
+```rust
+use nvidia_attestation_runner::{NvAttestRunner, Policy};
+
+let report = NvAttestRunner::local_gpu_with_nonce_hex("00112233445566778899aabbccddeeff")
+    .run()?;
+
+let verdict = Policy::nvidia_cc_baseline()
+    .expected_nonce_hex("00112233445566778899aabbccddeeff")?
+    .evaluate(&report);
+
+assert!(verdict.accepted, "{:?}", verdict.failures);
+
+let hashes = report.evidence_hashes();
+println!("raw GPU evidence hash: {}", hashes["raw_json"]);
+# Ok::<(), Box<dyn std::error::Error>>(())
+```
+
+## Design Boundaries
+
+- The crate keeps NVIDIA verifier JSON intact and exposes tolerant accessors for common claim shapes.
+- The policy layer is fail-closed: required claims must be present and successful.
+- Hashes are for evidence binding. They do not by themselves prove that GPU evidence was appraised correctly.
+- AIR v1/v2 integrations should bind this crate's GPU evidence hash into a separate canonical platform-evidence bundle unless and until the AIR receipt schema directly supports composite CPU/GPU evidence.
+
+## Status
+
+Early scaffold. The public API is expected to change before `1.0`.

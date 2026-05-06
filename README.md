@@ -5,10 +5,11 @@
 
 Unofficial Rust runner and policy layer for NVIDIA GPU attestation evidence.
 
-> **Status:** early scaffold. Do not use this crate as the sole basis for
-> production GPU trust decisions until a passing NVIDIA verifier fixture is
-> captured and the policy surface is reviewed against NVIDIA-supported NVAT
-> behavior.
+> **Status:** early scaffold. Publication and production trust claims are
+> intentionally blocked while a GCP A3/H100 NVAT measurement mismatch is under
+> vendor-guidance review. Do not use this crate as the sole basis for production
+> GPU trust decisions until a passing NVIDIA-supported verifier fixture is
+> captured and the policy surface is reviewed against supported NVAT behavior.
 
 This crate is designed for two use cases:
 
@@ -50,7 +51,11 @@ println!("raw GPU evidence hash: {}", hashes["raw_json"]);
 
 The crate has been exercised against NVIDIA `nvattest 1.2.0` on a Google Cloud `a3-highgpu-1g` Confidential VM with an H100 GPU in CC mode. Evidence collection succeeded, but local attestation returned `result_code = 12`, `measres = "fail"`, and one firmware measurement mismatch. That real output is included as a redacted fixture so the default policy rejects it fail-closed.
 
-Do not treat this crate as release-ready for production GPU trust decisions until a green NVIDIA local attestation run is captured and added as a passing fixture.
+Current blocker:
+
+- The observed GCP A3/H100 failure needs NVIDIA-supported guidance, a refreshed/expanded RIM reference value, or a known-good public fixture before this crate can make any positive GPU-attestation claim.
+- Until then, this repository is useful for fail-closed parsing, policy evaluation, and evidence-hash binding tests only.
+- Do not treat this crate as release-ready for production GPU trust decisions until a green NVIDIA local attestation run is captured and added as a passing fixture.
 
 ## Status
 

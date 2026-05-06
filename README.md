@@ -1,6 +1,14 @@
 # nvidia-attestation-runner
 
+[![CI](https://github.com/cyntrisec/nvidia-attestation-runner/actions/workflows/ci.yml/badge.svg)](https://github.com/cyntrisec/nvidia-attestation-runner/actions/workflows/ci.yml)
+[![License: MIT/Apache-2.0](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE-MIT)
+
 Unofficial Rust runner and policy layer for NVIDIA GPU attestation evidence.
+
+> **Status:** early scaffold. Do not use this crate as the sole basis for
+> production GPU trust decisions until a passing NVIDIA verifier fixture is
+> captured and the policy surface is reviewed against NVIDIA-supported NVAT
+> behavior.
 
 This crate is designed for two use cases:
 
@@ -47,3 +55,14 @@ Do not treat this crate as release-ready for production GPU trust decisions unti
 ## Status
 
 Early scaffold. The public API is expected to change before `1.0`.
+
+## Security
+
+Please report vulnerabilities privately. See [`SECURITY.md`](SECURITY.md).
+
+## License
+
+Licensed under either of:
+
+- Apache License, Version 2.0 ([`LICENSE-APACHE`](LICENSE-APACHE))
+- MIT license ([`LICENSE-MIT`](LICENSE-MIT))

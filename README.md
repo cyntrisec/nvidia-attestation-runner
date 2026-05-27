@@ -139,6 +139,24 @@ nvidia-attestation-runner \
 
 Policy rejection exits with status `2` after printing the JSON body. Use `--allow-policy-failure` when collecting failing fixtures intentionally.
 
+## Capturing hardware evidence
+
+For a VM that already has the NVIDIA driver, GPU CC mode, and `nvattest`
+installed, use the capture helper:
+
+```bash
+scripts/capture_nvattest_json.sh --backend local
+```
+
+It writes an ignored `artifacts/nvattest-*/` directory with the nonce, host/GPU
+metadata, wrapper JSON bundle, stderr, exit status, and SHA-256 manifest. Use
+`--backend both` to capture local and remote verifier paths, and use
+`--allow-policy-failure` only when intentionally preserving a failing fixture.
+
+Review and redact raw output before committing any fixture. The bundle preserves
+the NVIDIA verifier JSON under `bundle.report.raw` and may contain GPU UUIDs,
+driver/VBIOS versions, host-specific metadata, or cloud-environment identifiers.
+
 ## Status
 
 Early scaffold. The public API is expected to change before `1.0`.

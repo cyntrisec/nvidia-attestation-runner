@@ -12,12 +12,18 @@ use crate::{sha256_hex, Result};
 /// direct object fields, `claims` maps, `claims` arrays with name/value or
 /// name/result pairs, and NVAT 1.2.0-style `claims` arrays containing one
 /// object with direct claim-name keys.
+#[must_use]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttestationReport {
     raw: Value,
 }
 
 impl AttestationReport {
+    /// Construct a report from an already-normalized JSON value.
+    pub fn from_value(raw: Value) -> Self {
+        Self { raw }
+    }
+
     /// Parse verifier output from JSON bytes.
     pub fn from_json_slice(bytes: impl AsRef<[u8]>) -> Result<Self> {
         Ok(Self {
@@ -130,6 +136,10 @@ impl AttestationReport {
         let mut hashes = BTreeMap::new();
         if let Ok(hash) = self.canonical_json_sha256_hex() {
             hashes.insert("raw_json".to_owned(), hash);
+        }
+
+        if let Some(hash) = self.raw.get("transcript_sha256").and_then(Value::as_str) {
+            hashes.insert("cc_admin_stdout".to_owned(), hash.to_owned());
         }
 
         for key in ["claims", "detached_eat", "gpus"] {

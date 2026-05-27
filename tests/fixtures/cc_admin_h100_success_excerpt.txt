@@ -1,0 +1,47 @@
+Number of GPUs available : 1
+Fetching GPU 0 information from GPU driver.
+All GPU Evidences fetched successfully
+-----------------------------------
+Verifying GPU: GPU-2a96de4b-a50d-f6da-c0b2-89da42867f88
+	Driver version fetched : 580.159.03
+	VBIOS version fetched : 96.00.cf.00.01
+	Validating GPU certificate chains.
+		GPU attestation report certificate chain validation successful.
+	Authenticating attestation report
+GET MEASUREMENT REQUEST MESSAGE
+Nonce               : 4501e578785ed75e29c3c327893ce4fbcb8f0c0e51f090dc79e5a26906450211
+GET MEASUREMENT RESPONSE MESSAGE
+MeasurementRecord :
+----------------------------------------
+Measurement Block index : 9
+DMTFSpecMeasurementValueType : 1
+DMTFSpecMeasurementValueSize : 48
+DMTFSpecMeasurementValue     : 000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000
+----------------------------------------
+Measurement Block index : 10
+DMTFSpecMeasurementValueType : 1
+DMTFSpecMeasurementValueSize : 48
+DMTFSpecMeasurementValue     : 4b3ed0f834d10fef95e61615edc5b4e98ec78cff39323993b3218f0cd62507978cf64e4487520bc7e560fde71ea0fc75
+Nonce : 4c6b1ba62203945295a971c7b619775ae229e95b2442f8ad4bbca60e89236f52
+OpaqueLength : 435
+OpaqueData :
+OPAQUE_FIELD_ID_DRIVER_VERSION : b'580.159.03\x00'
+OPAQUE_FIELD_ID_FEATURE_FLAG : SPT
+		The nonce in the SPDM GET MEASUREMENT request message is matching with the generated nonce.
+		Driver version fetched from the attestation report : 580.159.03
+		VBIOS version fetched from the attestation report : 96.00.cf.00.01
+		Attestation report signature verification successful.
+		Attestation report verification successful.
+	Authenticating the RIMs.
+		Authenticating Driver RIM
+			driver RIM signature verification successful.
+			Driver RIM verification successful
+		Authenticating VBIOS RIM.
+			vbios RIM signature verification successful.
+			VBIOS RIM verification successful
+	Comparing measurements (runtime vs golden)
+			The runtime measurements are matching with the golden measurements.
+		GPU is in expected state.
+	GPU 0 with UUID GPU-2a96de4b-a50d-f6da-c0b2-89da42867f88 verified successfully.
+	GPU Ready State is already READY
+GPU Attestation is Successful.

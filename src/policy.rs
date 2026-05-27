@@ -1,15 +1,27 @@
 use crate::report::value_as_bool;
 use crate::AttestationReport;
+use serde::Serialize;
+
+/// Invalid expected nonce configuration.
+#[derive(Debug, Clone, thiserror::Error)]
+pub enum PolicyConfigurationError {
+    #[error("expected nonce must be 32 bytes, got {actual_len} bytes")]
+    InvalidNonceLength { actual_len: usize },
+
+    #[error("expected nonce is not valid hex: {0}")]
+    InvalidNonceHex(#[from] hex::FromHexError),
+}
 
 /// A failed policy requirement.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PolicyFailure {
     pub code: &'static str,
     pub message: String,
 }
 
 /// Policy evaluation result.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[must_use]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PolicyVerdict {
     pub accepted: bool,
     pub failures: Vec<PolicyFailure>,
@@ -33,6 +45,7 @@ impl PolicyVerdict {
 }
 
 /// Verifier-side requirements for NVIDIA attestation output.
+#[must_use]
 #[derive(Debug, Clone, Default)]
 pub struct Policy {
     expected_nonce: Option<Vec<u8>>,
@@ -44,6 +57,8 @@ pub struct Policy {
     require_secure_boot: bool,
     require_debug_disabled: bool,
     require_rim_signature_verified: bool,
+    require_gpu_confidential_mode: bool,
+    require_gpu_ready_state: bool,
 }
 
 impl Policy {
@@ -62,6 +77,26 @@ impl Policy {
         }
     }
 
+    /// Baseline for normalized `verifier.cc_admin --verbose` transcripts.
+    ///
+    /// The Python `cc_admin` transcript does not expose every claim that the
+    /// JSON NVAT/EAT path can expose. Keep the native JSON baseline stricter,
+    /// and use this profile only when the trust input is the NVIDIA verifier's
+    /// human-readable transcript.
+    pub fn nvidia_cc_admin_transcript_baseline() -> Self {
+        Self {
+            require_attestation_success: true,
+            require_gpu_evidence: true,
+            require_report_parsed: true,
+            require_report_signature_verified: true,
+            require_measurements_success: true,
+            require_rim_signature_verified: true,
+            require_gpu_confidential_mode: true,
+            require_gpu_ready_state: true,
+            ..Self::default()
+        }
+    }
+
     pub fn expected_nonce(mut self, nonce: impl Into<Vec<u8>>) -> Self {
         self.expected_nonce = Some(nonce.into());
         self
@@ -72,10 +107,15 @@ impl Policy {
         self
     }
 
-    pub fn expected_nonce_hex(mut self, nonce_hex: &str) -> Result<Self, hex::FromHexError> {
-        self.expected_nonce = Some(hex::decode(
-            nonce_hex.strip_prefix("0x").unwrap_or(nonce_hex),
-        )?);
+    pub fn expected_nonce_hex(mut self, nonce_hex: &str) -> Result<Self, PolicyConfigurationError> {
+        let nonce = hex::decode(nonce_hex.strip_prefix("0x").unwrap_or(nonce_hex))?;
+        if nonce.len() != 32 {
+            return Err(PolicyConfigurationError::InvalidNonceLength {
+                actual_len: nonce.len(),
+            });
+        }
+
+        self.expected_nonce = Some(nonce);
         Ok(self)
     }
 
@@ -111,6 +151,16 @@ impl Policy {
 
     pub fn require_rim_signature_verified(mut self, required: bool) -> Self {
         self.require_rim_signature_verified = required;
+        self
+    }
+
+    pub fn require_gpu_confidential_mode(mut self, required: bool) -> Self {
+        self.require_gpu_confidential_mode = required;
+        self
+    }
+
+    pub fn require_gpu_ready_state(mut self, required: bool) -> Self {
+        self.require_gpu_ready_state = required;
         self
     }
 
@@ -197,6 +247,14 @@ impl Policy {
             );
         }
 
+        if self.require_gpu_confidential_mode {
+            require_gpu_confidential_mode(&mut verdict, report);
+        }
+
+        if self.require_gpu_ready_state {
+            require_gpu_ready_state(&mut verdict, report);
+        }
+
         if let Some(expected_nonce) = &self.expected_nonce {
             require_nonce(&mut verdict, report, expected_nonce);
         }
@@ -207,14 +265,26 @@ impl Policy {
 
 fn require_attestation_success(verdict: &mut PolicyVerdict, report: &AttestationReport) {
     if let Some(code) = report.result_code() {
-        if code == 0 {
+        if code != 0 {
+            verdict.fail(
+                "nvidia_attestation_failed",
+                format!("NVIDIA verifier returned result_code {code}"),
+            );
             return;
         }
 
-        verdict.fail(
-            "nvidia_attestation_failed",
-            format!("NVIDIA verifier returned result_code {code}"),
-        );
+        if let Some(false) = report.claim_bool(&[
+            "x-nvidia-overall-att-result",
+            "overall_attestation_result",
+            "attestation_result",
+        ]) {
+            verdict.fail(
+                "nvidia_attestation_failed",
+                "NVIDIA verifier reported an unsuccessful attestation result",
+            );
+            return;
+        }
+
         return;
     }
 
@@ -327,7 +397,50 @@ fn require_debug_disabled(verdict: &mut PolicyVerdict, report: &AttestationRepor
     verdict.fail("debug_not_disabled", "debug mode is not disabled");
 }
 
+fn require_gpu_confidential_mode(verdict: &mut PolicyVerdict, report: &AttestationReport) {
+    match report
+        .claim("x-nvidia-gpu-mode")
+        .or_else(|| report.claim("gpu_mode"))
+        .or_else(|| report.claim("feature_flag"))
+        .and_then(serde_json::Value::as_str)
+        .map(|value| value.trim().to_ascii_uppercase())
+    {
+        Some(value) if value == "SPT" || value == "MPT" => {}
+        _ => verdict.fail(
+            "gpu_confidential_mode_missing",
+            "GPU confidential-computing feature mode was not reported as SPT or MPT",
+        ),
+    }
+}
+
+fn require_gpu_ready_state(verdict: &mut PolicyVerdict, report: &AttestationReport) {
+    match report
+        .claim("x-nvidia-gpu-ready-state")
+        .or_else(|| report.claim("gpu_ready_state"))
+        .and_then(serde_json::Value::as_str)
+        .map(|value| value.trim().to_ascii_uppercase())
+    {
+        Some(value) if value == "READY" => {}
+        _ => verdict.fail(
+            "gpu_ready_state_missing",
+            "GPU ready state was not reported as READY",
+        ),
+    }
+}
+
 fn require_nonce(verdict: &mut PolicyVerdict, report: &AttestationReport, expected_nonce: &[u8]) {
+    if let Some(actual) = report.eat_nonce() {
+        if actual == expected_nonce {
+            return;
+        }
+
+        verdict.fail(
+            "nonce_missing_or_mismatch",
+            "expected nonce was not present",
+        );
+        return;
+    }
+
     match report.claim_bool(&[
         "x-nvidia-gpu-attestation-report-nonce-match",
         "attestation_report_nonce_match",
@@ -341,11 +454,8 @@ fn require_nonce(verdict: &mut PolicyVerdict, report: &AttestationReport, expect
         None => {}
     }
 
-    match report.eat_nonce() {
-        Some(actual) if actual == expected_nonce => {}
-        _ => verdict.fail(
-            "nonce_missing_or_mismatch",
-            "expected nonce was not present",
-        ),
-    }
+    verdict.fail(
+        "nonce_missing_or_mismatch",
+        "expected nonce was not present",
+    );
 }

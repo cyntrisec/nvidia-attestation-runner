@@ -13,6 +13,7 @@ mod orchestrator;
 mod policy;
 mod report;
 mod runner;
+mod summary;
 
 pub use bundle::{NvidiaAttestationBackend, NvidiaEvidenceBundle};
 pub use cc_admin::{report_from_cc_admin_transcript, CcAdminRunner};
@@ -22,3 +23,7 @@ pub use orchestrator::NvidiaAttestationRunner;
 pub use policy::{Policy, PolicyConfigurationError, PolicyFailure, PolicyVerdict};
 pub use report::AttestationReport;
 pub use runner::NvAttestRunner;
+pub use summary::{
+    NvidiaGpuEvidenceSummaryV1, NvidiaGpuSummary, NvidiaPolicySummary,
+    NVIDIA_GPU_EVIDENCE_SUMMARY_V1,
+};

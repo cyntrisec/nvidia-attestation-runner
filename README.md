@@ -103,6 +103,8 @@ The repo does not yet contain a real passing `nvattest` / C++ SDK JSON fixture. 
 The crate also ships a small dependency-free CLI for hardware runs and integration scripts. It emits one JSON object containing:
 
 - `bundle_sha256`
+- `summary_sha256`
+- `summary`
 - `policy`
 - `bundle.backend`
 - `bundle.command`
@@ -139,6 +141,22 @@ nvidia-attestation-runner \
 
 Policy rejection exits with status `2` after printing the JSON body. Use `--allow-policy-failure` when collecting failing fixtures intentionally.
 
+For AIR/platform-evidence or SIEM integrations, prefer the redacted summary
+contract instead of ingesting the raw bundle:
+
+```bash
+nvidia-attestation-runner \
+  --backend nvattest-local-json \
+  --nonce 00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff \
+  --summary-only \
+  --pretty
+```
+
+The summary schema is `cyntrisec.nvidia.gpu_evidence_summary.v1`. It contains
+policy status, stable evidence hashes, and selected GPU posture fields. It does
+not include raw NVIDIA verifier JSON, detached EAT/JWT values, command lines,
+GPU UUIDs, or full transcripts.
+
 ## Capturing hardware evidence
 
 For a VM that already has the NVIDIA driver, GPU CC mode, and `nvattest`
@@ -149,13 +167,15 @@ scripts/capture_nvattest_json.sh --backend local
 ```
 
 It writes an ignored `artifacts/nvattest-*/` directory with the nonce, host/GPU
-metadata, wrapper JSON bundle, stderr, exit status, and SHA-256 manifest. Use
-`--backend both` to capture local and remote verifier paths, and use
+metadata, wrapper JSON bundle, redacted summary JSON, stderr, exit status, and
+SHA-256 manifest. Use `--backend both` to capture local and remote verifier paths, and use
 `--allow-policy-failure` only when intentionally preserving a failing fixture.
 
 Review and redact raw output before committing any fixture. The bundle preserves
 the NVIDIA verifier JSON under `bundle.report.raw` and may contain GPU UUIDs,
 driver/VBIOS versions, host-specific metadata, or cloud-environment identifiers.
+The `.summary.json` files are the intended redacted handoff artifact for
+EphemeralML platform-evidence binding.
 
 ## Status
 

@@ -44,6 +44,7 @@ Outputs:
   nonce.txt
   metadata/*.txt
   nvattest-local.bundle.json / nvattest-remote.bundle.json
+  nvattest-local.summary.json / nvattest-remote.summary.json
   nvattest-local.stderr.txt  / nvattest-remote.stderr.txt
   nvattest-local.status      / nvattest-remote.status
   SHA256SUMS
@@ -121,12 +122,14 @@ capture_backend() {
     local name="$1"
     local runner_backend="$2"
     local stdout_path="${OUT_DIR}/nvattest-${name}.bundle.json"
+    local summary_path="${OUT_DIR}/nvattest-${name}.summary.json"
     local stderr_path="${OUT_DIR}/nvattest-${name}.stderr.txt"
     local status_path="${OUT_DIR}/nvattest-${name}.status"
     local args=(
         --backend "${runner_backend}"
         --nonce "${NONCE_HEX}"
         --pretty
+        --summary-file "${summary_path}"
     )
     if ${ALLOW_POLICY_FAILURE}; then
         args+=(--allow-policy-failure)
@@ -160,6 +163,10 @@ This directory was produced by scripts/capture_nvattest_json.sh.
 Review and redact before committing any raw evidence. The bundle JSON preserves
 the NVIDIA verifier output under bundle.report.raw and may contain GPU UUIDs,
 driver/VBIOS versions, host-specific metadata, or cloud-environment identifiers.
+
+The summary JSON is the redacted integration artifact intended for AIR platform
+evidence and SIEM export. It contains policy status and evidence hashes, not raw
+NVIDIA tokens or verifier transcripts.
 EOF
 
 (cd "${OUT_DIR}" && find . -type f -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS)

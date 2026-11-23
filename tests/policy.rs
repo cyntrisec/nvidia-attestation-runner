@@ -1,6 +1,7 @@
 use nvidia_attestation_runner::{
     report_from_cc_admin_transcript, AttestationReport, CcAdminRunner, NvAttestRunner,
-    NvidiaAttestationBackend, NvidiaAttestationRunner, Policy,
+    NvidiaAttestationBackend, NvidiaAttestationRunner, NvidiaEvidenceBundle, Policy,
+    NVIDIA_GPU_EVIDENCE_SUMMARY_V1,
 };
 use std::process::Command;
 
@@ -176,6 +177,79 @@ fn real_h100_nvattest_local_success_fixture_is_accepted() {
     assert!(verdict.accepted, "{:?}", verdict.failures);
     assert!(report.evidence_hashes().contains_key("claims_json"));
     assert!(report.evidence_hashes().contains_key("detached_eat_json"));
+}
+
+#[test]
+fn real_h100_nvattest_local_success_summary_is_redacted_and_stable() {
+    let report = AttestationReport::from_json_str(include_str!(
+        "fixtures/h100_nvattest_local_success_redacted.json"
+    ))
+    .unwrap();
+    let verdict = Policy::nvidia_cc_baseline()
+        .expected_nonce_hex(REAL_H100_NVATTEST_SUCCESS_NONCE)
+        .unwrap()
+        .evaluate(&report);
+    let bundle = NvidiaEvidenceBundle::new(
+        NvidiaAttestationBackend::NvAttestLocalJson,
+        vec!["nvattest".to_owned()],
+        Some(0),
+        report,
+    );
+    let summary = bundle.gpu_evidence_summary("nvidia_cc_baseline", Some(&verdict));
+
+    assert_eq!(summary.schema_version, NVIDIA_GPU_EVIDENCE_SUMMARY_V1);
+    assert_eq!(summary.status, "pass");
+    assert_eq!(summary.policy.accepted, Some(true));
+    assert_eq!(summary.gpu.vendor, "nvidia");
+    assert_eq!(summary.gpu.product.as_deref(), Some("GH100 A01 GSP BROM"));
+    assert_eq!(summary.gpu.measres.as_deref(), Some("success"));
+    assert_eq!(summary.gpu.secboot, Some(true));
+    assert_eq!(summary.gpu.dbgstat.as_deref(), Some("disabled"));
+    assert_eq!(summary.gpu.rim_status.as_deref(), Some("verified"));
+    assert!(summary.evidence_hashes.contains_key("raw_json"));
+    assert!(summary.evidence_hashes.contains_key("detached_eat_json"));
+    assert!(summary.nonce_sha256.is_some());
+
+    let summary_hash = summary.canonical_json_sha256_hex().unwrap();
+    assert_eq!(summary_hash, summary.canonical_json_sha256_hex().unwrap());
+    assert_eq!(summary_hash.len(), 64);
+
+    let serialized = serde_json::to_string(&summary).unwrap();
+    assert!(!serialized.contains("REDACTED_GPU_UNSIGNED_JWT"));
+    assert!(!serialized.contains("REDACTED_OVERALL_UNSIGNED_JWT"));
+    assert!(!serialized.contains("REDACTED_UEID"));
+    assert!(!serialized.contains(REAL_H100_NVATTEST_SUCCESS_NONCE));
+}
+
+#[test]
+fn failing_h100_summary_contains_policy_failure_codes_without_raw_measurements() {
+    let report = AttestationReport::from_json_str(include_str!(
+        "fixtures/h100_local_attestation_measres_fail.json"
+    ))
+    .unwrap();
+    let verdict = Policy::nvidia_cc_baseline()
+        .expected_nonce_hex(TEST_NONCE)
+        .unwrap()
+        .evaluate(&report);
+    let bundle = NvidiaEvidenceBundle::new(
+        NvidiaAttestationBackend::NvAttestLocalJson,
+        vec!["nvattest".to_owned()],
+        Some(12),
+        report,
+    );
+    let summary = bundle.gpu_evidence_summary("nvidia_cc_baseline", Some(&verdict));
+
+    assert_eq!(summary.status, "fail");
+    assert_eq!(summary.policy.accepted, Some(false));
+    assert!(summary
+        .policy
+        .failure_codes
+        .iter()
+        .any(|code| code == "measurement_mismatch_records_present"));
+
+    let serialized = serde_json::to_string(&summary).unwrap();
+    assert!(!serialized.contains("REDACTED_RUNTIME_MEASUREMENT"));
+    assert!(!serialized.contains("REDACTED_GOLDEN_MEASUREMENT"));
 }
 
 #[test]
@@ -359,6 +433,97 @@ fn cli_custom_json_emits_bundle_and_policy_verdict() {
         .pointer("/bundle_sha256")
         .and_then(serde_json::Value::as_str)
         .is_some());
+    assert!(json
+        .pointer("/summary_sha256")
+        .and_then(serde_json::Value::as_str)
+        .is_some());
+    assert_eq!(
+        json.pointer("/summary/schema_version")
+            .and_then(serde_json::Value::as_str),
+        Some(NVIDIA_GPU_EVIDENCE_SUMMARY_V1)
+    );
+}
+
+#[test]
+fn cli_summary_only_emits_redacted_summary_without_raw_bundle() {
+    let compact_report: String = GOOD_REPORT.lines().map(str::trim).collect();
+    let output = Command::new(CLI)
+        .args([
+            "--backend",
+            "custom-json",
+            "--nonce",
+            TEST_NONCE,
+            "--summary-only",
+            "--program",
+            "sh",
+            "--arg",
+            "-c",
+            "--arg",
+            &format!("printf '%s' '{compact_report}'"),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(json.pointer("/bundle").is_none());
+    assert!(json
+        .pointer("/summary_sha256")
+        .and_then(serde_json::Value::as_str)
+        .is_some());
+    assert_eq!(
+        json.pointer("/summary/schema_version")
+            .and_then(serde_json::Value::as_str),
+        Some(NVIDIA_GPU_EVIDENCE_SUMMARY_V1)
+    );
+    assert_eq!(
+        json.pointer("/summary/status")
+            .and_then(serde_json::Value::as_str),
+        Some("pass")
+    );
+}
+
+#[test]
+fn cli_summary_file_writes_redacted_summary_from_same_run() {
+    let compact_report: String = GOOD_REPORT.lines().map(str::trim).collect();
+    let summary_path = std::env::temp_dir().join(format!(
+        "nvidia-attestation-runner-summary-{}.json",
+        std::process::id()
+    ));
+    let _ = std::fs::remove_file(&summary_path);
+    let output = Command::new(CLI)
+        .args([
+            "--backend",
+            "custom-json",
+            "--nonce",
+            TEST_NONCE,
+            "--summary-file",
+            summary_path.to_str().unwrap(),
+            "--program",
+            "sh",
+            "--arg",
+            "-c",
+            "--arg",
+            &format!("printf '%s' '{compact_report}'"),
+        ])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success(), "{output:?}");
+    let summary_json: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&summary_path).unwrap()).unwrap();
+    let _ = std::fs::remove_file(summary_path);
+
+    assert!(summary_json
+        .pointer("/summary_sha256")
+        .and_then(serde_json::Value::as_str)
+        .is_some());
+    assert_eq!(
+        summary_json
+            .pointer("/summary/schema_version")
+            .and_then(serde_json::Value::as_str),
+        Some(NVIDIA_GPU_EVIDENCE_SUMMARY_V1)
+    );
 }
 
 #[test]

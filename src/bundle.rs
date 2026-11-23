@@ -2,7 +2,8 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{AttestationReport, Result};
+use crate::summary::build_summary;
+use crate::{AttestationReport, NvidiaGpuEvidenceSummaryV1, PolicyVerdict, Result};
 
 /// NVIDIA attestation backend used to produce a report.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -70,6 +71,20 @@ impl NvidiaEvidenceBundle {
 
     pub fn evidence_hashes(&self) -> &BTreeMap<String, String> {
         &self.evidence_hashes
+    }
+
+    pub fn gpu_evidence_summary(
+        &self,
+        policy_name: impl Into<String>,
+        verdict: Option<&PolicyVerdict>,
+    ) -> NvidiaGpuEvidenceSummaryV1 {
+        build_summary(
+            self.backend,
+            &self.report,
+            &self.evidence_hashes,
+            policy_name,
+            verdict,
+        )
     }
 
     pub fn canonical_json_sha256_hex(&self) -> Result<String> {

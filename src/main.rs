@@ -1,11 +1,13 @@
 use std::env;
 use std::error::Error;
 use std::ffi::OsString;
+use std::fs;
+use std::path::PathBuf;
 use std::process::ExitCode;
 
 use nvidia_attestation_runner::{
-    CcAdminRunner, NvAttestRunner, NvidiaAttestationBackend, NvidiaEvidenceBundle, Policy,
-    PolicyVerdict,
+    CcAdminRunner, NvAttestRunner, NvidiaAttestationBackend, NvidiaEvidenceBundle,
+    NvidiaGpuEvidenceSummaryV1, Policy, PolicyVerdict,
 };
 use serde::Serialize;
 
@@ -23,13 +25,23 @@ struct Args {
     pretty: bool,
     no_policy: bool,
     allow_policy_failure: bool,
+    summary_only: bool,
+    summary_file: Option<PathBuf>,
 }
 
 #[derive(Debug, Serialize)]
 struct CliOutput {
     bundle_sha256: String,
+    summary_sha256: String,
+    summary: NvidiaGpuEvidenceSummaryV1,
     policy: Option<PolicyVerdict>,
     bundle: NvidiaEvidenceBundle,
+}
+
+#[derive(Debug, Serialize)]
+struct SummaryCliOutput {
+    summary_sha256: String,
+    summary: NvidiaGpuEvidenceSummaryV1,
 }
 
 fn main() -> ExitCode {
@@ -57,6 +69,11 @@ fn run() -> Result<bool, Box<dyn Error>> {
         }
     };
     let bundle = run_backend(&args)?;
+    let policy_name = if args.no_policy {
+        "none"
+    } else {
+        policy_name_for_backend(args.backend)
+    };
     let policy = if args.no_policy {
         None
     } else {
@@ -70,8 +87,40 @@ fn run() -> Result<bool, Box<dyn Error>> {
         .as_ref()
         .map(|verdict| verdict.accepted)
         .unwrap_or(true);
+    let summary = bundle.gpu_evidence_summary(policy_name, policy.as_ref());
+    let summary_sha256 = summary.canonical_json_sha256_hex()?;
+    if let Some(path) = &args.summary_file {
+        let bytes = if args.pretty {
+            serde_json::to_vec_pretty(&SummaryCliOutput {
+                summary_sha256: summary_sha256.clone(),
+                summary: summary.clone(),
+            })?
+        } else {
+            serde_json::to_vec(&SummaryCliOutput {
+                summary_sha256: summary_sha256.clone(),
+                summary: summary.clone(),
+            })?
+        };
+        fs::write(path, bytes)?;
+    }
+
+    if args.summary_only {
+        let output = SummaryCliOutput {
+            summary_sha256,
+            summary,
+        };
+        if args.pretty {
+            println!("{}", serde_json::to_string_pretty(&output)?);
+        } else {
+            println!("{}", serde_json::to_string(&output)?);
+        }
+        return Ok(accepted || args.allow_policy_failure);
+    }
+
     let output = CliOutput {
         bundle_sha256: bundle.canonical_json_sha256_hex()?,
+        summary_sha256,
+        summary,
         policy,
         bundle,
     };
@@ -136,6 +185,16 @@ fn policy_for_backend(backend: NvidiaAttestationBackend) -> Policy {
     }
 }
 
+fn policy_name_for_backend(backend: NvidiaAttestationBackend) -> &'static str {
+    match backend {
+        NvidiaAttestationBackend::NvAttestLocalJson
+        | NvidiaAttestationBackend::NvAttestRemoteJson
+        | NvidiaAttestationBackend::CustomJson => "nvidia_cc_baseline",
+        NvidiaAttestationBackend::CcAdminTranscript
+        | NvidiaAttestationBackend::CustomTranscript => "nvidia_cc_admin_transcript_baseline",
+    }
+}
+
 impl Command {
     fn parse<I>(input: I) -> Result<Self, Box<dyn Error>>
     where
@@ -148,6 +207,8 @@ impl Command {
         let mut pretty = false;
         let mut no_policy = false;
         let mut allow_policy_failure = false;
+        let mut summary_only = false;
+        let mut summary_file = None;
 
         let mut args = input.into_iter();
         while let Some(arg) = args.next() {
@@ -166,6 +227,10 @@ impl Command {
                 "--pretty" => pretty = true,
                 "--no-policy" => no_policy = true,
                 "--allow-policy-failure" => allow_policy_failure = true,
+                "--summary-only" => summary_only = true,
+                "--summary-file" => {
+                    summary_file = Some(PathBuf::from(next_arg(&mut args, "--summary-file")?))
+                }
                 other => return Err(format!("unknown argument: {other}").into()),
             }
         }
@@ -182,6 +247,8 @@ impl Command {
             pretty,
             no_policy,
             allow_policy_failure,
+            summary_only,
+            summary_file,
         }))
     }
 }
@@ -229,6 +296,8 @@ Options:\n\
   --arg <value>             Add one custom command argument; repeat as needed\n\
   --pretty                  Pretty-print JSON output\n\
   --no-policy               Emit bundle without policy evaluation\n\
-  --allow-policy-failure    Exit 0 even when policy rejects the evidence\n"
+  --allow-policy-failure    Exit 0 even when policy rejects the evidence\n\
+  --summary-only            Emit only the redacted GPU evidence summary\n\
+  --summary-file <path>     Also write the redacted summary JSON to this path\n"
     );
 }

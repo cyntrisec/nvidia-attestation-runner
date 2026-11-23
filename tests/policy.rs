@@ -1,7 +1,7 @@
 use nvidia_attestation_runner::{
     report_from_cc_admin_transcript, AttestationReport, CcAdminRunner, NvAttestRunner,
-    NvidiaAttestationBackend, NvidiaAttestationRunner, NvidiaEvidenceBundle, Policy,
-    NVIDIA_GPU_EVIDENCE_SUMMARY_V1,
+    NvidiaAttestationBackend, NvidiaAttestationRunner, NvidiaEvidenceBundle,
+    NvidiaGpuEvidenceSummaryV1, Policy, NVIDIA_GPU_EVIDENCE_SUMMARY_V1,
 };
 use std::process::Command;
 
@@ -9,6 +9,10 @@ const CLI: &str = env!("CARGO_BIN_EXE_nvidia-attestation-runner");
 const TEST_NONCE: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
 const REAL_H100_NVATTEST_SUCCESS_NONCE: &str =
     "0b2e6e35691e26c9c1a4b19b22786364538c682833870cb0372d068767ce63f2";
+const REAL_H100_DRV580_NVATTEST2_NONCE: &str =
+    "1551ff51392ef1b1d0fceefee303971eff71a4bba384326d24bf936c5428b5b3";
+const REAL_H100_DRV620_NVATTEST2_NONCE: &str =
+    "2d38fa6e190a6ba439278f705344c5c6b5cd5c07bdb4dc92ad9c57da6ef0befa";
 
 const GOOD_REPORT: &str = r#"{
   "result_code": 0,
@@ -364,6 +368,399 @@ fn real_h100_collect_evidence_output_has_stable_hashes() {
 }
 
 #[test]
+fn real_h100_nvattest2_local_success_fixture_is_accepted() {
+    let report = AttestationReport::from_json_str(include_str!(
+        "fixtures/h100_drv580_nvattest2_local_success_redacted.json"
+    ))
+    .unwrap();
+
+    assert!(report.has_gpu_evidence());
+    assert_eq!(report.result_code(), Some(0));
+    assert_eq!(report.result_message(), Some("Ok"));
+    assert_eq!(
+        report
+            .claim("x-nvidia-gpu-claims-version")
+            .and_then(serde_json::Value::as_str),
+        Some("4.0")
+    );
+    assert_eq!(
+        report.claim("measres").and_then(serde_json::Value::as_str),
+        Some("success")
+    );
+    assert_eq!(
+        report.claim("secboot").and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert!(report
+        .claim("x-nvidia-mismatch-measurement-records")
+        .is_some_and(serde_json::Value::is_null));
+    assert!(report
+        .claim("x-nvidia-mismatch-opaque-data-records")
+        .is_some_and(serde_json::Value::is_null));
+
+    let verdict = Policy::nvidia_cc_baseline()
+        .expected_nonce_hex(REAL_H100_DRV580_NVATTEST2_NONCE)
+        .unwrap()
+        .evaluate(&report);
+
+    assert!(verdict.accepted, "{:?}", verdict.failures);
+    assert!(report.evidence_hashes().contains_key("claims_json"));
+    assert!(report.evidence_hashes().contains_key("detached_eat_json"));
+}
+
+#[test]
+fn real_h100_nvattest2_remote_success_fixture_is_accepted() {
+    let report = AttestationReport::from_json_str(include_str!(
+        "fixtures/h100_drv580_nvattest2_remote_success_redacted.json"
+    ))
+    .unwrap();
+
+    assert!(report.has_gpu_evidence());
+    assert_eq!(report.result_code(), Some(0));
+    assert_eq!(
+        report.claim("hwmodel").and_then(serde_json::Value::as_str),
+        Some("GH100")
+    );
+    assert_eq!(
+        report.claim("measres").and_then(serde_json::Value::as_str),
+        Some("success")
+    );
+
+    let verdict = Policy::nvidia_cc_baseline()
+        .expected_nonce_hex(REAL_H100_DRV580_NVATTEST2_NONCE)
+        .unwrap()
+        .evaluate(&report);
+
+    assert!(verdict.accepted, "{:?}", verdict.failures);
+}
+
+#[test]
+fn real_h100_nvattest2_success_fixture_rejects_wrong_expected_nonce() {
+    let report = AttestationReport::from_json_str(include_str!(
+        "fixtures/h100_drv580_nvattest2_remote_success_redacted.json"
+    ))
+    .unwrap();
+    let verdict = Policy::nvidia_cc_baseline()
+        .expected_nonce_hex(TEST_NONCE)
+        .unwrap()
+        .evaluate(&report);
+
+    assert!(!verdict.accepted);
+    assert!(verdict
+        .failures
+        .iter()
+        .any(|failure| failure.code == "nonce_missing_or_mismatch"));
+}
+
+#[test]
+fn real_h100_versioned_opaque_data_success_fixture_is_accepted() {
+    let report = AttestationReport::from_json_str(include_str!(
+        "fixtures/h100_drv620_nvattest2_local_success_redacted.json"
+    ))
+    .unwrap();
+
+    assert!(report.has_gpu_evidence());
+    assert_eq!(report.result_code(), Some(0));
+    assert_eq!(
+        report
+            .claim("x-nvidia-gpu-driver-version")
+            .and_then(serde_json::Value::as_str),
+        Some("620.70.06")
+    );
+    assert_eq!(
+        report.claim("measres").and_then(serde_json::Value::as_str),
+        Some("success")
+    );
+
+    let verdict = Policy::nvidia_cc_baseline()
+        .expected_nonce_hex(REAL_H100_DRV620_NVATTEST2_NONCE)
+        .unwrap()
+        .evaluate(&report);
+
+    assert!(verdict.accepted, "{:?}", verdict.failures);
+}
+
+#[test]
+fn real_h100_missing_reference_answer_is_rejected_without_gpu_evidence() {
+    let report = AttestationReport::from_json_str(include_str!(
+        "fixtures/h100_drv595_nvattest2_local_rim_not_found.json"
+    ))
+    .unwrap();
+
+    assert!(!report.has_gpu_evidence());
+    assert_eq!(report.result_code(), Some(104));
+    assert_eq!(report.result_message(), Some("RIM Not Found"));
+
+    let verdict = Policy::nvidia_cc_baseline()
+        .expected_nonce_hex(TEST_NONCE)
+        .unwrap()
+        .evaluate(&report);
+
+    assert!(!verdict.accepted);
+    assert!(verdict
+        .failures
+        .iter()
+        .any(|failure| failure.code == "nvidia_attestation_failed"));
+    assert!(verdict
+        .failures
+        .iter()
+        .any(|failure| failure.code == "gpu_evidence_missing"));
+}
+
+#[test]
+fn real_h100_old_tool_on_versioned_opaque_data_is_rejected() {
+    let report = AttestationReport::from_json_str(include_str!(
+        "fixtures/h100_drv620_nvattest1_local_evidence_invalid.json"
+    ))
+    .unwrap();
+
+    assert!(!report.has_gpu_evidence());
+    assert_eq!(report.result_code(), Some(503));
+    assert_eq!(report.result_message(), Some("GPU Evidence Invalid"));
+
+    let verdict = Policy::nvidia_cc_baseline()
+        .expected_nonce_hex(REAL_H100_DRV620_NVATTEST2_NONCE)
+        .unwrap()
+        .evaluate(&report);
+
+    assert!(!verdict.accepted);
+    assert!(verdict
+        .failures
+        .iter()
+        .any(|failure| failure.code == "nvidia_attestation_failed"));
+    assert!(verdict
+        .failures
+        .iter()
+        .any(|failure| failure.code == "gpu_evidence_missing"));
+}
+
+#[test]
+fn empty_failed_answer_summary_reports_no_gpu_evidence() {
+    let report = AttestationReport::from_json_str(include_str!(
+        "fixtures/h100_drv595_nvattest2_local_rim_not_found.json"
+    ))
+    .unwrap();
+    let verdict = Policy::nvidia_cc_baseline()
+        .expected_nonce_hex(TEST_NONCE)
+        .unwrap()
+        .evaluate(&report);
+    let bundle = NvidiaEvidenceBundle::new(
+        NvidiaAttestationBackend::NvAttestLocalJson,
+        vec!["nvattest".to_owned()],
+        Some(104),
+        report,
+    );
+    let summary = bundle.gpu_evidence_summary("nvidia_cc_baseline", Some(&verdict));
+
+    assert_eq!(summary.status, "fail");
+    assert_eq!(summary.policy.accepted, Some(false));
+    assert!(!summary.gpu.evidence_present);
+    assert_eq!(summary.tool_result_code, Some(104));
+    assert!(summary
+        .policy
+        .failure_codes
+        .iter()
+        .any(|code| code == "gpu_evidence_missing"));
+}
+
+#[test]
+fn empty_evidence_containers_do_not_count_as_gpu_evidence() {
+    for json in [
+        r#"{"result_code": 0, "result_message": "Ok", "claims": {}, "detached_eat": {}}"#,
+        r#"{"result_code": 0, "result_message": "Ok", "claims": [], "detached_eat": []}"#,
+        r#"{"result_code": 0, "result_message": "Ok", "detached_eat": null, "gpus": []}"#,
+        r#"{"result_code": 0, "result_message": "Ok", "detached_eat": {"GPU-0": ""}}"#,
+    ] {
+        let report = AttestationReport::from_json_str(json).unwrap();
+        assert!(!report.has_gpu_evidence(), "{json}");
+
+        let verdict = Policy::nvidia_cc_baseline().evaluate(&report);
+        assert!(!verdict.accepted, "{json}");
+        assert!(
+            verdict
+                .failures
+                .iter()
+                .any(|failure| failure.code == "gpu_evidence_missing"),
+            "{json}"
+        );
+    }
+}
+
+#[test]
+fn detached_eat_with_a_token_counts_as_gpu_evidence() {
+    let report = AttestationReport::from_json_str(
+        r#"{"result_code": 0, "result_message": "Ok", "detached_eat": {"GPU-0": "opaque-token"}}"#,
+    )
+    .unwrap();
+
+    assert!(report.has_gpu_evidence());
+}
+
+#[test]
+fn real_h100_nvattest2_success_fixture_rejects_reported_nonce_mismatch() {
+    let mut value: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/h100_drv580_nvattest2_local_success_redacted.json"
+    ))
+    .unwrap();
+    *value
+        .pointer_mut("/claims/0/x-nvidia-gpu-attestation-report-nonce-match")
+        .unwrap() = serde_json::Value::Bool(false);
+    let report = AttestationReport::from_value(value);
+    let verdict = Policy::nvidia_cc_baseline()
+        .expected_nonce_hex(REAL_H100_DRV580_NVATTEST2_NONCE)
+        .unwrap()
+        .evaluate(&report);
+
+    assert!(!verdict.accepted);
+    assert!(verdict
+        .failures
+        .iter()
+        .any(|failure| failure.code == "nonce_mismatch"));
+}
+
+#[test]
+fn answers_with_several_device_claim_sets_are_rejected() {
+    let mut value: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/h100_drv580_nvattest2_local_success_redacted.json"
+    ))
+    .unwrap();
+    let second_device = value.pointer("/claims/0").unwrap().clone();
+    value
+        .pointer_mut("/claims")
+        .and_then(serde_json::Value::as_array_mut)
+        .unwrap()
+        .push(second_device);
+    let report = AttestationReport::from_value(value);
+
+    assert_eq!(report.device_claim_set_count(), 2);
+
+    let verdict = Policy::nvidia_cc_baseline()
+        .expected_nonce_hex(REAL_H100_DRV580_NVATTEST2_NONCE)
+        .unwrap()
+        .evaluate(&report);
+
+    assert!(!verdict.accepted);
+    assert!(verdict
+        .failures
+        .iter()
+        .any(|failure| failure.code == "multiple_device_claim_sets_unsupported"));
+}
+
+#[test]
+fn device_claim_sets_are_counted_by_shape() {
+    let single_device = AttestationReport::from_json_str(include_str!(
+        "fixtures/h100_drv580_nvattest2_local_success_redacted.json"
+    ))
+    .unwrap();
+    let name_value_claims = AttestationReport::from_json_str(GOOD_REPORT).unwrap();
+    let failed_answer = AttestationReport::from_json_str(include_str!(
+        "fixtures/h100_drv595_nvattest2_local_rim_not_found.json"
+    ))
+    .unwrap();
+
+    assert_eq!(single_device.device_claim_set_count(), 1);
+    assert_eq!(name_value_claims.device_claim_set_count(), 0);
+    assert_eq!(failed_answer.device_claim_set_count(), 0);
+}
+
+#[test]
+fn passing_summary_round_trips_through_json() {
+    let report = AttestationReport::from_json_str(include_str!(
+        "fixtures/h100_drv580_nvattest2_local_success_redacted.json"
+    ))
+    .unwrap();
+    let verdict = Policy::nvidia_cc_baseline()
+        .expected_nonce_hex(REAL_H100_DRV580_NVATTEST2_NONCE)
+        .unwrap()
+        .evaluate(&report);
+    let bundle = NvidiaEvidenceBundle::new(
+        NvidiaAttestationBackend::NvAttestLocalJson,
+        vec!["nvattest".to_owned()],
+        Some(0),
+        report,
+    );
+    let summary = bundle.gpu_evidence_summary("nvidia_cc_baseline", Some(&verdict));
+
+    assert_eq!(summary.status, "pass");
+    assert!(summary.policy.failure_codes.is_empty());
+
+    let json = serde_json::to_string(&summary).unwrap();
+    let parsed: NvidiaGpuEvidenceSummaryV1 = serde_json::from_str(&json).unwrap();
+
+    assert_eq!(parsed, summary);
+}
+
+#[test]
+fn summary_drops_text_that_is_not_a_short_printable_line() {
+    let mut value: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/h100_drv580_nvattest2_local_success_redacted.json"
+    ))
+    .unwrap();
+    *value.pointer_mut("/claims/0/hwmodel").unwrap() =
+        serde_json::Value::String("serial 0123456789\nhost: internal.example".to_owned());
+    *value
+        .pointer_mut("/claims/0/x-nvidia-gpu-driver-version")
+        .unwrap() = serde_json::Value::String("9".repeat(200));
+    let report = AttestationReport::from_value(value);
+    let bundle = NvidiaEvidenceBundle::new(
+        NvidiaAttestationBackend::NvAttestLocalJson,
+        vec!["nvattest".to_owned()],
+        Some(0),
+        report,
+    );
+    let summary = bundle.gpu_evidence_summary("nvidia_cc_baseline", None);
+
+    assert_eq!(summary.status, "not_evaluated");
+    assert_eq!(summary.gpu.product, None);
+    assert_eq!(summary.gpu.driver_version, None);
+    assert_eq!(summary.gpu.vbios_version.as_deref(), Some("96.00.DB.00.02"));
+}
+
+#[test]
+fn summary_status_fields_agree_with_the_policy_verdict() {
+    for claims in [
+        r#"{"measres": "success", "dbgstat": "disabled"}"#,
+        r#"{"measres": "fail", "dbgstat": "enabled"}"#,
+        r#"{"x-nvidia-gpu-measres": "fail", "measres": "success", "dbgstat": "off"}"#,
+        r#"{"measres": true, "debug": false}"#,
+        "{}",
+    ] {
+        let report = AttestationReport::from_json_str(format!(
+            r#"{{"result_code": 0, "result_message": "Ok", "claims": [{claims}]}}"#
+        ))
+        .unwrap();
+        let verdict = Policy::nvidia_cc_baseline().evaluate(&report);
+        let bundle = NvidiaEvidenceBundle::new(
+            NvidiaAttestationBackend::CustomJson,
+            vec!["tool".to_owned()],
+            Some(0),
+            report,
+        );
+        let summary = bundle.gpu_evidence_summary("nvidia_cc_baseline", Some(&verdict));
+
+        let measurements_accepted = !verdict
+            .failures
+            .iter()
+            .any(|failure| failure.code == "measurements_not_successful");
+        let debug_accepted = !verdict
+            .failures
+            .iter()
+            .any(|failure| failure.code == "debug_not_disabled");
+
+        assert_eq!(
+            summary.gpu.measres.as_deref() == Some("success"),
+            measurements_accepted,
+            "{claims}"
+        );
+        assert_eq!(
+            summary.gpu.dbgstat.as_deref() == Some("disabled"),
+            debug_accepted,
+            "{claims}"
+        );
+    }
+}
+
+#[test]
 fn runner_returns_json_report_from_nonzero_attestation_exit() {
     let report = NvAttestRunner::new("sh")
         .args([
@@ -524,6 +921,43 @@ fn cli_summary_file_writes_redacted_summary_from_same_run() {
             .and_then(serde_json::Value::as_str),
         Some(NVIDIA_GPU_EVIDENCE_SUMMARY_V1)
     );
+}
+
+#[test]
+fn cli_prints_evidence_even_when_summary_file_cannot_be_written() {
+    let compact_report: String = GOOD_REPORT.lines().map(str::trim).collect();
+    let summary_path = std::env::temp_dir()
+        .join(format!(
+            "nvidia-attestation-runner-missing-dir-{}",
+            std::process::id()
+        ))
+        .join("summary.json");
+    let output = Command::new(CLI)
+        .args([
+            "--backend",
+            "custom-json",
+            "--nonce",
+            TEST_NONCE,
+            "--summary-file",
+            summary_path.to_str().unwrap(),
+            "--program",
+            "sh",
+            "--arg",
+            "-c",
+            "--arg",
+            &format!("printf '%s' '{compact_report}'"),
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(
+        json.pointer("/policy/accepted")
+            .and_then(serde_json::Value::as_bool),
+        Some(true)
+    );
+    assert!(json.pointer("/bundle").is_some());
 }
 
 #[test]

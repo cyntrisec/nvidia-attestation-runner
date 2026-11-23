@@ -7,7 +7,7 @@
       "measres": "fail",
       "oemid": "5703",
       "secboot": null,
-      "ueid": "426742440763672368864520930710313134034702592410",
+      "ueid": "REDACTED_UEID",
       "x-nvidia-device-type": "gpu",
       "x-nvidia-gpu-arch-check": true,
       "x-nvidia-gpu-attestation-report-cert-chain": {

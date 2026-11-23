@@ -1,0 +1,69 @@
+{
+  "claims": [
+    {
+      "dbgstat": "disabled",
+      "eat_nonce": "2d38fa6e190a6ba439278f705344c5c6b5cd5c07bdb4dc92ad9c57da6ef0befa",
+      "hwmodel": "GH100 A01 GSP BROM",
+      "measres": "success",
+      "oemid": "5703",
+      "secboot": true,
+      "ueid": "REDACTED_UEID",
+      "x-nvidia-attester-claims": {},
+      "x-nvidia-device-type": "gpu",
+      "x-nvidia-gpu-arch-check": true,
+      "x-nvidia-gpu-attestation-report-cert-chain": {
+        "x-nvidia-cert-expiration-date": "9999-12-31T23:59:59Z",
+        "x-nvidia-cert-ocsp-nonce-matches": true,
+        "x-nvidia-cert-ocsp-response-valid": true,
+        "x-nvidia-cert-ocsp-status": "good",
+        "x-nvidia-cert-revocation-reason": null,
+        "x-nvidia-cert-status": "valid"
+      },
+      "x-nvidia-gpu-attestation-report-cert-chain-fwid-match": true,
+      "x-nvidia-gpu-attestation-report-nonce-match": true,
+      "x-nvidia-gpu-attestation-report-parsed": true,
+      "x-nvidia-gpu-attestation-report-signature-verified": true,
+      "x-nvidia-gpu-claims-version": "4.0",
+      "x-nvidia-gpu-driver-rim-cert-chain": {
+        "x-nvidia-cert-expiration-date": "2028-10-30T18:01:40Z",
+        "x-nvidia-cert-ocsp-nonce-matches": true,
+        "x-nvidia-cert-ocsp-response-valid": true,
+        "x-nvidia-cert-ocsp-status": "good",
+        "x-nvidia-cert-revocation-reason": null,
+        "x-nvidia-cert-status": "valid"
+      },
+      "x-nvidia-gpu-driver-rim-fetched": true,
+      "x-nvidia-gpu-driver-rim-measurements-available": true,
+      "x-nvidia-gpu-driver-rim-signature-verified": true,
+      "x-nvidia-gpu-driver-rim-version-match": true,
+      "x-nvidia-gpu-driver-version": "620.70.06",
+      "x-nvidia-gpu-vbios-index-no-conflict": true,
+      "x-nvidia-gpu-vbios-rim-cert-chain": {
+        "x-nvidia-cert-expiration-date": "2028-04-16T18:48:21Z",
+        "x-nvidia-cert-ocsp-nonce-matches": true,
+        "x-nvidia-cert-ocsp-response-valid": true,
+        "x-nvidia-cert-ocsp-status": "good",
+        "x-nvidia-cert-revocation-reason": null,
+        "x-nvidia-cert-status": "valid"
+      },
+      "x-nvidia-gpu-vbios-rim-fetched": true,
+      "x-nvidia-gpu-vbios-rim-measurements-available": true,
+      "x-nvidia-gpu-vbios-rim-signature-verified": true,
+      "x-nvidia-gpu-vbios-rim-version-match": true,
+      "x-nvidia-gpu-vbios-version": "96.00.DB.00.02",
+      "x-nvidia-mismatch-measurement-records": null,
+      "x-nvidia-mismatch-opaque-data-records": null
+    }
+  ],
+  "detached_eat": [
+    [
+      "JWT",
+      "REDACTED_DETACHED_EAT_JWT"
+    ],
+    {
+      "GPU-0": "REDACTED_DETACHED_EAT_JWT"
+    }
+  ],
+  "result_code": 0,
+  "result_message": "Ok"
+}

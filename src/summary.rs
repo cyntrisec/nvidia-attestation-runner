@@ -3,6 +3,10 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::policy::{
+    debug_reported_disabled, measurements_reported_successful, DEBUG_STATUS_CLAIMS,
+    MEASUREMENT_RESULT_CLAIMS,
+};
 use crate::report::value_as_bool;
 use crate::{
     sha256_hex, AttestationReport, NvidiaAttestationBackend, PolicyFailure, PolicyVerdict, Result,
@@ -11,12 +15,18 @@ use crate::{
 /// Stable redacted summary schema emitted for AIR / SIEM integrations.
 pub const NVIDIA_GPU_EVIDENCE_SUMMARY_V1: &str = "cyntrisec.nvidia.gpu_evidence_summary.v1";
 
+/// Longest string copied from verifier output into the summary.
+const MAX_SUMMARY_TEXT_LEN: usize = 64;
+
 /// Redacted NVIDIA GPU evidence summary.
 ///
-/// This type intentionally does not include raw NVIDIA verifier JSON,
-/// transcripts, detached EAT/JWT values, GPU UUIDs, command lines, or host
-/// metadata. Use [`crate::NvidiaEvidenceBundle`] when raw evidence retention is
-/// required.
+/// This type does not carry raw NVIDIA verifier JSON, transcripts, detached
+/// EAT/JWT values, command lines, or host metadata. The `gpu` fields are a
+/// fixed set of posture claims copied from the verifier output: model, mode,
+/// measurement result, secure boot, debug status, driver and VBIOS versions.
+/// A copied string is kept only when it is a single printable ASCII line of at
+/// most 64 characters. Use [`crate::NvidiaEvidenceBundle`] when raw evidence
+/// retention is required.
 #[must_use]
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NvidiaGpuEvidenceSummaryV1 {
@@ -33,7 +43,14 @@ pub struct NvidiaGpuEvidenceSummaryV1 {
 }
 
 impl NvidiaGpuEvidenceSummaryV1 {
-    /// Serialize the summary as stable JSON and return its SHA-256 hash.
+    /// Return the SHA-256 hash of the summary's compact JSON serialization.
+    ///
+    /// The bytes hashed are the summary object without insignificant
+    /// whitespace, fields in the order this type declares them and absent
+    /// optional fields omitted. A consumer can recompute the hash from a
+    /// written summary by compacting the `summary` object while keeping its
+    /// key order, for example `jq -cj .summary file.json | sha256sum`. Sorting
+    /// the keys gives a different hash.
     pub fn canonical_json_sha256_hex(&self) -> Result<String> {
         let bytes = serde_json::to_vec(self)?;
         Ok(sha256_hex(bytes))
@@ -48,7 +65,7 @@ pub struct NvidiaPolicySummary {
     pub evaluated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub accepted: Option<bool>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failure_codes: Vec<String>,
 }
 
@@ -175,41 +192,44 @@ fn first_string_claim(report: &AttestationReport, names: &[&str]) -> Option<Stri
 
 fn value_to_string(value: &Value) -> Option<String> {
     match value {
-        Value::String(value) => non_empty(value),
+        Value::String(value) => summary_text(value),
         Value::Number(value) => Some(value.to_string()),
         Value::Bool(value) => Some(value.to_string()),
         _ => None,
     }
 }
 
+/// Return `"success"` when the policy's own predicate holds, otherwise the
+/// first usable text the verifier reported.
 fn measurement_status(report: &AttestationReport) -> Option<String> {
-    for name in ["x-nvidia-gpu-measres", "measres", "measurement_result"] {
-        let Some(value) = report.claim(name) else {
-            continue;
-        };
-        if let Some(value) = value.as_str().and_then(non_empty) {
-            return Some(value);
-        }
-        if let Some(value) = value_as_bool(value) {
-            return Some(if value { "success" } else { "fail" }.to_owned());
-        }
+    if measurements_reported_successful(report) {
+        return Some("success".to_owned());
     }
-    None
+    first_status_text(report, &MEASUREMENT_RESULT_CLAIMS, "success", "fail")
 }
 
+/// Return `"disabled"` when the policy's own predicate holds, otherwise the
+/// first usable text the verifier reported.
 fn debug_status(report: &AttestationReport) -> Option<String> {
-    for name in ["x-nvidia-gpu-dbgstat", "dbgstat", "debug"] {
-        let Some(value) = report.claim(name) else {
-            continue;
-        };
-        if let Some(value) = value.as_str().and_then(non_empty) {
-            return Some(value);
-        }
-        if let Some(enabled) = value_as_bool(value) {
-            return Some(if enabled { "enabled" } else { "disabled" }.to_owned());
-        }
+    if debug_reported_disabled(report) {
+        return Some("disabled".to_owned());
     }
-    None
+    first_status_text(report, &DEBUG_STATUS_CLAIMS, "enabled", "disabled")
+}
+
+fn first_status_text(
+    report: &AttestationReport,
+    names: &[&str],
+    when_true: &str,
+    when_false: &str,
+) -> Option<String> {
+    names.iter().find_map(|name| {
+        let value = report.claim(name)?;
+        value.as_str().and_then(summary_text).or_else(|| {
+            let flag = value_as_bool(value)?;
+            Some(if flag { when_true } else { when_false }.to_owned())
+        })
+    })
 }
 
 fn rim_status(report: &AttestationReport) -> Option<String> {
@@ -228,7 +248,13 @@ fn rim_status(report: &AttestationReport) -> Option<String> {
     }
 }
 
-fn non_empty(value: &str) -> Option<String> {
+/// Return a trimmed string when it is a short, single, printable ASCII line.
+///
+/// Summary fields are copied from verifier output. Anything that does not look
+/// like a label or a version string is dropped instead of exported.
+fn summary_text(value: &str) -> Option<String> {
     let value = value.trim();
-    (!value.is_empty()).then(|| value.to_owned())
+    let printable = value.chars().all(|ch| ch.is_ascii_graphic() || ch == ' ');
+    (!value.is_empty() && value.len() <= MAX_SUMMARY_TEXT_LEN && printable)
+        .then(|| value.to_owned())
 }

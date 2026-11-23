@@ -35,7 +35,9 @@ Options:
 
   --allow-policy-failure
       Preserve bundles even when policy rejects. This is useful for negative
-      fixtures. The script still records the non-zero runner exit code.
+      fixtures. With this flag the runner exits 0 on a policy rejection, so the
+      .status file holds 0 as well. Read the verdict from "policy.accepted" in
+      the bundle or "status" in the summary, not from the exit status.
 
   -h, --help
       Show this help.
@@ -103,7 +105,11 @@ printf '%s\n' "${NONCE_HEX}" > "${OUT_DIR}/nonce.txt"
 date -u +%Y-%m-%dT%H:%M:%SZ > "${OUT_DIR}/metadata/captured_at.txt"
 uname -a > "${OUT_DIR}/metadata/uname.txt" 2>&1 || true
 command -v nvattest > "${OUT_DIR}/metadata/nvattest_path.txt" 2>&1 || true
-nvattest --version > "${OUT_DIR}/metadata/nvattest_version.txt" 2>&1 || true
+# `nvattest version` is the supported form in nvattest 1.2.2 and 2.0.0; both
+# reject `--version`. The flag is kept only as a fallback for other builds.
+if ! nvattest version > "${OUT_DIR}/metadata/nvattest_version.txt" 2>&1; then
+    nvattest --version > "${OUT_DIR}/metadata/nvattest_version.txt" 2>&1 || true
+fi
 nvidia-smi > "${OUT_DIR}/metadata/nvidia_smi.txt" 2>&1 || true
 nvidia-smi --query-gpu=name,uuid,driver_version,vbios_version,pci.bus_id,compute_cap --format=csv \
     > "${OUT_DIR}/metadata/nvidia_smi_query.csv" 2>&1 || true

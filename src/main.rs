@@ -69,69 +69,54 @@ fn run() -> Result<bool, Box<dyn Error>> {
         }
     };
     let bundle = run_backend(&args)?;
-    let policy_name = if args.no_policy {
-        "none"
+    let (policy_name, policy) = if args.no_policy {
+        ("none", None)
     } else {
-        policy_name_for_backend(args.backend)
-    };
-    let policy = if args.no_policy {
-        None
-    } else {
-        Some(
-            policy_for_backend(args.backend)
-                .expected_nonce_hex(&args.nonce_hex)?
-                .evaluate(bundle.report()),
-        )
+        let (name, policy) = policy_for_backend(args.backend);
+        let verdict = policy
+            .expected_nonce_hex(&args.nonce_hex)?
+            .evaluate(bundle.report());
+        (name, Some(verdict))
     };
     let accepted = policy
         .as_ref()
         .map(|verdict| verdict.accepted)
         .unwrap_or(true);
     let summary = bundle.gpu_evidence_summary(policy_name, policy.as_ref());
-    let summary_sha256 = summary.canonical_json_sha256_hex()?;
-    if let Some(path) = &args.summary_file {
-        let bytes = if args.pretty {
-            serde_json::to_vec_pretty(&SummaryCliOutput {
-                summary_sha256: summary_sha256.clone(),
-                summary: summary.clone(),
-            })?
-        } else {
-            serde_json::to_vec(&SummaryCliOutput {
-                summary_sha256: summary_sha256.clone(),
-                summary: summary.clone(),
-            })?
-        };
-        fs::write(path, bytes)?;
-    }
+    let summary_output = SummaryCliOutput {
+        summary_sha256: summary.canonical_json_sha256_hex()?,
+        summary,
+    };
+    let summary_json = to_json(&summary_output, args.pretty)?;
 
     if args.summary_only {
-        let output = SummaryCliOutput {
-            summary_sha256,
-            summary,
+        println!("{summary_json}");
+    } else {
+        let output = CliOutput {
+            bundle_sha256: bundle.canonical_json_sha256_hex()?,
+            summary_sha256: summary_output.summary_sha256,
+            summary: summary_output.summary,
+            policy,
+            bundle,
         };
-        if args.pretty {
-            println!("{}", serde_json::to_string_pretty(&output)?);
-        } else {
-            println!("{}", serde_json::to_string(&output)?);
-        }
-        return Ok(accepted || args.allow_policy_failure);
+        println!("{}", to_json(&output, args.pretty)?);
     }
 
-    let output = CliOutput {
-        bundle_sha256: bundle.canonical_json_sha256_hex()?,
-        summary_sha256,
-        summary,
-        policy,
-        bundle,
-    };
-
-    if args.pretty {
-        println!("{}", serde_json::to_string_pretty(&output)?);
-    } else {
-        println!("{}", serde_json::to_string(&output)?);
+    // The summary file is written last, so that a failed write cannot discard
+    // the evidence already printed on stdout.
+    if let Some(path) = &args.summary_file {
+        fs::write(path, format!("{summary_json}\n"))?;
     }
 
     Ok(accepted || args.allow_policy_failure)
+}
+
+fn to_json<T: Serialize>(value: &T, pretty: bool) -> serde_json::Result<String> {
+    if pretty {
+        serde_json::to_string_pretty(value)
+    } else {
+        serde_json::to_string(value)
+    }
 }
 
 fn run_backend(args: &Args) -> Result<NvidiaEvidenceBundle, Box<dyn Error>> {
@@ -173,25 +158,20 @@ fn custom_transcript_runner(args: &Args) -> Result<CcAdminRunner, Box<dyn Error>
     Ok(CcAdminRunner::new(program).args(args.command_args.clone()))
 }
 
-fn policy_for_backend(backend: NvidiaAttestationBackend) -> Policy {
+/// Return the policy applied to a backend together with the name reported for
+/// it, so the summary cannot name a policy other than the one evaluated.
+fn policy_for_backend(backend: NvidiaAttestationBackend) -> (&'static str, Policy) {
     match backend {
         NvidiaAttestationBackend::NvAttestLocalJson
         | NvidiaAttestationBackend::NvAttestRemoteJson
-        | NvidiaAttestationBackend::CustomJson => Policy::nvidia_cc_baseline(),
-        NvidiaAttestationBackend::CcAdminTranscript
-        | NvidiaAttestationBackend::CustomTranscript => {
-            Policy::nvidia_cc_admin_transcript_baseline()
+        | NvidiaAttestationBackend::CustomJson => {
+            ("nvidia_cc_baseline", Policy::nvidia_cc_baseline())
         }
-    }
-}
-
-fn policy_name_for_backend(backend: NvidiaAttestationBackend) -> &'static str {
-    match backend {
-        NvidiaAttestationBackend::NvAttestLocalJson
-        | NvidiaAttestationBackend::NvAttestRemoteJson
-        | NvidiaAttestationBackend::CustomJson => "nvidia_cc_baseline",
         NvidiaAttestationBackend::CcAdminTranscript
-        | NvidiaAttestationBackend::CustomTranscript => "nvidia_cc_admin_transcript_baseline",
+        | NvidiaAttestationBackend::CustomTranscript => (
+            "nvidia_cc_admin_transcript_baseline",
+            Policy::nvidia_cc_admin_transcript_baseline(),
+        ),
     }
 }
 

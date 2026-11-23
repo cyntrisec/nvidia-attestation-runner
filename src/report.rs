@@ -10,8 +10,8 @@ use crate::{sha256_hex, Result};
 /// The verifier JSON has changed across NVIDIA tooling versions. This type keeps
 /// the raw JSON intact and exposes tolerant accessors for common claim shapes:
 /// direct object fields, `claims` maps, `claims` arrays with name/value or
-/// name/result pairs, and NVAT 1.2.0-style `claims` arrays containing one
-/// object with direct claim-name keys.
+/// name/result pairs, and NVAT 1.2.x / 2.0.0-style `claims` arrays containing
+/// one object with direct claim-name keys.
 #[must_use]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttestationReport {
@@ -98,6 +98,12 @@ impl AttestationReport {
     }
 
     /// Return true if the verifier output appears to contain per-GPU evidence.
+    ///
+    /// This is a presence check, not a validity check: it does not inspect the
+    /// tokens or claims it finds. A `detached_eat` or `gpus` key counts only
+    /// when it holds at least one non-blank string. When attestation fails
+    /// before any claim is produced, `nvattest` still emits `"claims": {}` and
+    /// `"detached_eat": {}`, so the presence of the key alone says nothing.
     pub fn has_gpu_evidence(&self) -> bool {
         self.has_claim_prefix("x-nvidia-gpu-")
             || self
@@ -105,8 +111,30 @@ impl AttestationReport {
                 .and_then(Value::as_str)
                 .map(|value| value.eq_ignore_ascii_case("gpu"))
                 .unwrap_or(false)
-            || self.raw.get("detached_eat").is_some()
-            || self.raw.get("gpus").is_some()
+            || self
+                .raw
+                .get("detached_eat")
+                .is_some_and(value_has_string_content)
+            || self.raw.get("gpus").is_some_and(value_has_string_content)
+    }
+
+    /// Return the number of per-device claim sets in the verifier output.
+    ///
+    /// `nvattest` serializes its claims as an array with one object per
+    /// attested device, each object keyed directly by claim name. Entries of
+    /// the name/value form are single claims, not claim sets, and are not
+    /// counted.
+    ///
+    /// The accessors on this type read the first matching claim only, so an
+    /// answer with more than one claim set is not fully visible through them.
+    pub fn device_claim_set_count(&self) -> usize {
+        match self.raw.get("claims") {
+            Some(Value::Array(items)) => items
+                .iter()
+                .filter(|item| item.is_object() && claim_name(item).is_none())
+                .count(),
+            _ => 0,
+        }
     }
 
     /// Return the NVIDIA SDK top-level result code when present.
@@ -201,6 +229,19 @@ pub(crate) fn value_as_bool(value: &Value) -> Option<bool> {
             _ => None,
         },
         _ => None,
+    }
+}
+
+/// Return true when a JSON value holds at least one non-blank string.
+///
+/// Evidence containers carry tokens and identifiers as strings. Empty objects,
+/// empty arrays, nulls, and blank strings are not evidence.
+fn value_has_string_content(value: &Value) -> bool {
+    match value {
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Array(items) => items.iter().any(value_has_string_content),
+        Value::Object(fields) => fields.values().any(value_has_string_content),
+        Value::Null | Value::Bool(_) | Value::Number(_) => false,
     }
 }
 

@@ -2,6 +2,13 @@ use crate::report::value_as_bool;
 use crate::AttestationReport;
 use serde::Serialize;
 
+/// Claim names under which NVIDIA tooling reports the measurement result.
+pub(crate) const MEASUREMENT_RESULT_CLAIMS: [&str; 3] =
+    ["x-nvidia-gpu-measres", "measres", "measurement_result"];
+
+/// Claim names under which NVIDIA tooling reports the debug status.
+pub(crate) const DEBUG_STATUS_CLAIMS: [&str; 3] = ["x-nvidia-gpu-dbgstat", "dbgstat", "debug"];
+
 /// Invalid expected nonce configuration.
 #[derive(Debug, Clone, thiserror::Error)]
 pub enum PolicyConfigurationError {
@@ -166,6 +173,19 @@ impl Policy {
 
     pub fn evaluate(&self, report: &AttestationReport) -> PolicyVerdict {
         let mut verdict = PolicyVerdict::accepted();
+
+        // Claim accessors read the first matching claim only. Accepting an
+        // answer that covers several devices would mean checking one of them.
+        let claim_sets = report.device_claim_set_count();
+        if claim_sets > 1 {
+            verdict.fail(
+                "multiple_device_claim_sets_unsupported",
+                format!(
+                    "verifier output holds claim sets for {claim_sets} devices; \
+                     this policy evaluates a single device, so the answer is rejected"
+                ),
+            );
+        }
 
         if self.require_attestation_success {
             require_attestation_success(&mut verdict, report);
@@ -349,9 +369,22 @@ fn require_measurements_success(verdict: &mut PolicyVerdict, report: &Attestatio
         );
     }
 
-    for name in ["x-nvidia-gpu-measres", "measres", "measurement_result"] {
-        if let Some(value) = report.claim(name) {
-            let ok = value_as_bool(value).unwrap_or_else(|| {
+    if !measurements_reported_successful(report) {
+        verdict.fail(
+            "measurements_not_successful",
+            "GPU measurements were not reported as successful",
+        );
+    }
+}
+
+/// Return true when a measurement-result claim reports success.
+///
+/// The redacted summary uses the same predicate, so the status it exports
+/// cannot disagree with the verdict.
+pub(crate) fn measurements_reported_successful(report: &AttestationReport) -> bool {
+    MEASUREMENT_RESULT_CLAIMS.iter().any(|name| {
+        report.claim(name).is_some_and(|value| {
+            value_as_bool(value).unwrap_or_else(|| {
                 value
                     .as_str()
                     .map(|value| {
@@ -361,40 +394,33 @@ fn require_measurements_success(verdict: &mut PolicyVerdict, report: &Attestatio
                         )
                     })
                     .unwrap_or(false)
-            });
-
-            if ok {
-                return;
-            }
-        }
-    }
-
-    verdict.fail(
-        "measurements_not_successful",
-        "GPU measurements were not reported as successful",
-    );
+            })
+        })
+    })
 }
 
 fn require_debug_disabled(verdict: &mut PolicyVerdict, report: &AttestationReport) {
-    for name in ["x-nvidia-gpu-dbgstat", "dbgstat", "debug"] {
-        if let Some(value) = report.claim(name) {
-            let disabled = match value {
-                serde_json::Value::Bool(enabled) => !enabled,
-                serde_json::Value::Number(number) => number.as_i64() == Some(0),
-                serde_json::Value::String(value) => matches!(
-                    value.trim().to_ascii_lowercase().as_str(),
-                    "disabled" | "false" | "0" | "off"
-                ),
-                _ => false,
-            };
-
-            if disabled {
-                return;
-            }
-        }
+    if !debug_reported_disabled(report) {
+        verdict.fail("debug_not_disabled", "debug mode is not disabled");
     }
+}
 
-    verdict.fail("debug_not_disabled", "debug mode is not disabled");
+/// Return true when a debug-status claim reports that debug is disabled.
+///
+/// The redacted summary uses the same predicate, so the status it exports
+/// cannot disagree with the verdict.
+pub(crate) fn debug_reported_disabled(report: &AttestationReport) -> bool {
+    DEBUG_STATUS_CLAIMS.iter().any(|name| {
+        report.claim(name).is_some_and(|value| match value {
+            serde_json::Value::Bool(enabled) => !enabled,
+            serde_json::Value::Number(number) => number.as_i64() == Some(0),
+            serde_json::Value::String(value) => matches!(
+                value.trim().to_ascii_lowercase().as_str(),
+                "disabled" | "false" | "0" | "off"
+            ),
+            _ => false,
+        })
+    })
 }
 
 fn require_gpu_confidential_mode(verdict: &mut PolicyVerdict, report: &AttestationReport) {
@@ -429,33 +455,28 @@ fn require_gpu_ready_state(verdict: &mut PolicyVerdict, report: &AttestationRepo
 }
 
 fn require_nonce(verdict: &mut PolicyVerdict, report: &AttestationReport, expected_nonce: &[u8]) {
-    if let Some(actual) = report.eat_nonce() {
-        if actual == expected_nonce {
-            return;
-        }
+    let reported_match = report.claim_bool(&[
+        "x-nvidia-gpu-attestation-report-nonce-match",
+        "attestation_report_nonce_match",
+        "nonce_match",
+    ]);
 
+    // A mismatch reported by the verifier is final, whatever nonce the output
+    // echoes back.
+    if reported_match == Some(false) {
+        verdict.fail("nonce_mismatch", "attestation report nonce did not match");
+        return;
+    }
+
+    let accepted = match report.eat_nonce() {
+        Some(actual) => actual == expected_nonce,
+        None => reported_match == Some(true),
+    };
+
+    if !accepted {
         verdict.fail(
             "nonce_missing_or_mismatch",
             "expected nonce was not present",
         );
-        return;
     }
-
-    match report.claim_bool(&[
-        "x-nvidia-gpu-attestation-report-nonce-match",
-        "attestation_report_nonce_match",
-        "nonce_match",
-    ]) {
-        Some(true) => return,
-        Some(false) => {
-            verdict.fail("nonce_mismatch", "attestation report nonce did not match");
-            return;
-        }
-        None => {}
-    }
-
-    verdict.fail(
-        "nonce_missing_or_mismatch",
-        "expected nonce was not present",
-    );
 }

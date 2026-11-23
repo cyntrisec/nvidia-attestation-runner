@@ -5,10 +5,11 @@
 
 Unofficial Rust runner and policy layer for NVIDIA GPU attestation evidence.
 
-> **Status:** early scaffold. A passing NVIDIA local-verifier transcript fixture
-> is now captured for a GCP A3/H100 Confidential VM run on 2026-05-27, but this
-> crate remains an unofficial wrapper. Treat it as an evidence-normalization and
-> policy layer around NVIDIA tooling, not as a native NVIDIA verifier.
+> **Status:** early scaffold, exercised on real hardware. On 2026-11-23 it ran
+> with `nvattest` 1.2.2 and 2.0.0 on a GCP A3/H100 Confidential VM, through both
+> the local and the remote verifier. It remains an unofficial wrapper: an
+> evidence-normalization and policy layer around NVIDIA tooling, not a native
+> NVIDIA verifier.
 
 This crate is designed for two use cases:
 
@@ -17,6 +18,10 @@ This crate is designed for two use cases:
 
 It is not an NVIDIA project and does not currently implement a native NVIDIA verifier. The first version deliberately wraps NVIDIA tooling output instead of reimplementing certificate, RIM, or token validation logic.
 See [`SUPPORTED.md`](SUPPORTED.md) for the exact hardware/tooling matrix that has been exercised.
+
+NVIDIA publishes its own attestation SDK with a C API, the `nvattest` CLI, and Rust bindings: <https://github.com/NVIDIA/attestation-sdk>. Use that when you need an in-process verifier. This crate shells out to the `nvattest` CLI and adds two things on top: a fail-closed policy over the verifier's answer, and stable hashes plus a redacted summary for binding GPU evidence into other evidence.
+
+**Use `nvattest` 2.0.0 or later.** NVIDIA states that drivers released with CUDA 13.5 and later emit a versioned opaque data format that older verifiers cannot process ([format description](https://docs.nvidia.com/attestation/specs/latest/opaque-data-format.html)). On an H100 with driver `620.70.06`, `nvattest` 1.2.2 failed with "GPU Evidence Invalid" and 2.0.0 passed.
 
 ## Example
 
@@ -76,27 +81,36 @@ println!("bundle hash: {}", bundle.canonical_json_sha256_hex()?);
 - The crate keeps NVIDIA verifier JSON intact and exposes tolerant accessors for common claim shapes.
 - The policy layer is fail-closed: required claims must be present and successful.
 - `nvattest` can exit non-zero while still emitting JSON failure details; the runner returns that parsed JSON so callers can make an explicit policy decision.
-- `verifier.cc_admin --verbose` is normalized as a transcript. NVIDIA's tool remains the verifier; this crate records the transcript hash and exposes only the claims present in the text.
+- When attestation fails before any claim is produced, `nvattest` returns empty `claims` and `detached_eat` objects. The policy reports `gpu_evidence_missing` unless the answer holds GPU claims or non-empty `detached_eat` / `gpus` content. This is a presence check; it does not validate the tokens it finds.
+- `nvattest` emits one claim set per attested device, and the accessors here read the first matching claim only. An answer with claim sets for more than one device is rejected with `multiple_device_claim_sets_unsupported`. Multi-GPU hosts are not supported yet.
+- A nonce mismatch reported by the verifier is final, even when the output echoes the expected nonce.
+- Several requirements accept more than one historical claim name. For the measurement result and the debug status, any name that reports the good state satisfies the requirement. An answer that repeats a claim under two names with different values is not treated as contradictory.
+- The local verifier's detached EAT is unsigned (`alg: none`); only the remote verifier returns a signed token. This crate hashes the token and does not verify its signature. `nvattest verify-token` (2.0.0) verifies tokens issued by NVIDIA's remote service and can check the nonce.
+- `verifier.cc_admin --verbose` is normalized as a transcript. NVIDIA's tool remains the verifier; this crate records the transcript hash and exposes only the claims present in the text. The normalizer creates the GPU claim names itself, so `gpu_evidence_missing` cannot fire on this path; the other checks carry the decision.
 - `NvidiaEvidenceBundle` records the backend, command line, exit code, normalized report, and stable evidence hashes for AIR/platform-evidence binding.
 - Hashes are for evidence binding. They do not by themselves prove that GPU evidence was appraised correctly.
 - AIR v1/v2 integrations should bind this crate's GPU evidence hash into a separate canonical platform-evidence bundle unless and until the AIR receipt schema directly supports composite CPU/GPU evidence.
 
 ## Hardware validation
 
-The crate has been exercised against NVIDIA `nvattest 1.2.0` on a Google Cloud `a3-highgpu-1g` Confidential VM with an H100 GPU in CC mode. The older fixture captures a real local-attestation failure (`result_code = 12`, `measres = "fail"`, firmware measurement index 9 mismatch) and the default JSON policy rejects it fail-closed.
+All runs so far are on Google Cloud `a3-highgpu-1g` Confidential VMs (Intel TDX) with one NVIDIA H100 80GB HBM3 in CC mode. The full matrix is in [`SUPPORTED.md`](SUPPORTED.md), and every row marked with a fixture has a real, redacted answer under `tests/fixtures/`.
 
-On 2026-05-27, a fresh GCP A3/H100 Confidential VM run using NVIDIA's Python local verifier (`python3 -m verifier.cc_admin --verbose`) passed:
+Run of 2026-11-23, VBIOS `96.00.DB.00.02`:
 
-- GPU: NVIDIA H100 80GB HBM3
-- Driver: `580.159.03`
-- VBIOS: `96.00.CF.00.01`
-- Result: `GPU Attestation is Successful.`
-- Runtime measurements matched the golden measurements.
-- Measurement block index 9 was all zeros in the passing transcript.
+- Drivers `580.178.04` and `615.71.09` (Ubuntu-signed modules, UEFI Secure Boot on): `nvattest` 1.2.2 and 2.0.0 both pass through the local and the remote verifier. The default JSON policy accepts; for `615.71.09` it was run on the 2.0.0 answers only.
+- Driver `595.99.02` (Ubuntu-signed, UEFI Secure Boot on): NVIDIA's RIM service has no reference for this version. The local verifier returns `result_code = 104` ("RIM Not Found"), the remote one `result_code = 2` ("Internal Error"). The policy rejects.
+- Driver `620.70.06` emits the versioned opaque data format. `nvattest` 1.2.2 cannot parse it (`result_code = 503`, "GPU Evidence Invalid"); `nvattest` 2.0.0 passes through the local and the remote verifier. The policy follows the tool in both cases.
 
-The passing fixture is intentionally a `cc_admin` transcript excerpt, not a replacement for NVIDIA's JSON/EAT output. The Python local verifier also emits a deprecation warning pointing users toward the C++ SDK before September 15, 2026, so long-term integrations should prefer `nvattest` / SDK JSON where available.
+The `620.70.06` run is a format check, not a reference configuration: the driver came from NVIDIA's apt repository through DKMS, needed a one-line source change to compile against kernel `7.0.0-1017-gcp`, and ran with UEFI Secure Boot off.
 
-The repo does not yet contain a real passing `nvattest` / C++ SDK JSON fixture. Add one when the next hardware run captures it; do not use a synthetic fixture for production claim language.
+Earlier runs, VBIOS `96.00.CF.00.01`:
+
+- 2026-05-27, driver `580.159.03`: `nvattest` local JSON pass, and a pass of NVIDIA's Python local verifier (`python3 -m verifier.cc_admin --verbose`), kept as a transcript excerpt.
+- April 2026, drivers `580.126.09` and `590.48.01`: local attestation failed with `result_code = 12`, `measres = "fail"`, firmware measurement index 9 mismatch. The default JSON policy rejects it fail-closed.
+
+NVIDIA has deprecated the Python SDK and the Local GPU Verifier in favour of the C++ SDK and its CLI ([notice](https://github.com/NVIDIA/nvtrust)). The `cc_admin` transcript backend is kept for existing transcripts; new integrations should use the `nvattest` JSON backends.
+
+Not validated: Confidential Space, RTX PRO 6000, AMD SEV-SNP hosts, and any cloud other than Google Cloud. Multi-GPU hosts are rejected by the policy. Do not use a synthetic fixture for production claim language.
 
 ## CLI
 
@@ -153,9 +167,23 @@ nvidia-attestation-runner \
 ```
 
 The summary schema is `cyntrisec.nvidia.gpu_evidence_summary.v1`. It contains
-policy status, stable evidence hashes, and selected GPU posture fields. It does
-not include raw NVIDIA verifier JSON, detached EAT/JWT values, command lines,
-GPU UUIDs, or full transcripts.
+policy status, stable evidence hashes, and a fixed set of GPU posture fields
+copied from the verifier output: model, mode, measurement result, secure boot,
+debug status, driver and VBIOS versions. A copied string is kept only when it
+is a single printable ASCII line of at most 64 characters. The summary has no
+field for raw NVIDIA verifier JSON, detached EAT/JWT values, command lines,
+GPU UUIDs, or transcripts.
+
+`summary_sha256` is the SHA-256 of the `summary` object in compact form with
+its keys in the order written. To recompute it from a written summary:
+
+```bash
+jq -cj .summary nvattest-local.summary.json | sha256sum
+```
+
+With `--summary-file`, the summary is written after the JSON body has been
+printed, so a failed write exits with status `1` without discarding the
+evidence on stdout.
 
 ## Capturing hardware evidence
 
@@ -170,6 +198,8 @@ It writes an ignored `artifacts/nvattest-*/` directory with the nonce, host/GPU
 metadata, wrapper JSON bundle, redacted summary JSON, stderr, exit status, and
 SHA-256 manifest. Use `--backend both` to capture local and remote verifier paths, and use
 `--allow-policy-failure` only when intentionally preserving a failing fixture.
+With that flag the runner exits `0` even when the policy rejects, so read the
+verdict from `policy.accepted` in the bundle or `status` in the summary.
 
 Review and redact raw output before committing any fixture. The bundle preserves
 the NVIDIA verifier JSON under `bundle.report.raw` and may contain GPU UUIDs,
